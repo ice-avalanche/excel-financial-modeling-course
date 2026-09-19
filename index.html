@@ -1312,6 +1312,14 @@ button.schedule-test.active{
   width:fit-content;
 }
 
+
+/* Homework Markdown presentation; no other screens are affected. */
+.final-assignment .assignment-content > p{margin:0 0 14px;font-size:12px;line-height:1.7;color:var(--muted)}
+.final-assignment .assignment-content > h3{margin:19px 0 8px;font-size:12px;line-height:1.5;color:var(--text)}
+.final-assignment .assignment-content .assignment-list{margin:7px 0 14px;padding-left:23px}
+.final-assignment .assignment-content .assignment-list .assignment-list{margin:7px 0;padding-left:22px}
+.final-assignment .assignment-content .assignment-list li{margin:6px 0;font-size:12px;line-height:1.6;color:var(--text)}
+.final-assignment .assignment-content .assignment-list li::marker{color:var(--homework)}
 </style>
 </head>
 <body>
@@ -1900,6 +1908,9 @@ function takeawaysHtml(lesson){
 }
 function assignmentHtml(a,lesson){
   if(!a)return "";
+  if(typeof a.html === "string"){
+    return `<section class="final-assignment"><div class="assignment-label">${iconSvg("homework")}<span>Итоговое задание</span></div><h2>Что нужно сделать после занятия</h2><div class="assignment-content">${a.html}</div></section>`;
+  }
   const list=(items,cls="")=>items?.length?`<ol class="assignment-list ${cls}">${items.map(x=>`<li>${escapeHtml(x)}</li>`).join("")}</ol>`:"";
   return `<section class="final-assignment"><div class="assignment-label">${iconSvg("homework")}<span>Итоговое задание</span></div><h2>Что нужно сделать после занятия</h2>${a.fileNote?`<p class="assignment-note">${escapeHtml(a.fileNote)}</p>`:""}<h3>Обязательно</h3>${list(a.required)}${a.optional?.length?`<h3>Повышенной сложности</h3>${list(a.optional,"optional")}`:""}</section>`;
 }
@@ -2525,31 +2536,67 @@ bootstrap();
   }
 
   function parseHomeworkSection(raw){
-    const lines = String(raw || "").replace(/\r\n?/g, "\n").split("\n");
-    const required = [];
-    const noteLines = [];
+    // Homeworks are Markdown documents with headings, paragraphs and nested lists.
+    // Keep this renderer local: it does not affect lesson text or the login UI.
+    const lines=String(raw || "").replace(/\r\n?/g,"\n").split("\n");
+    const html=[];
+    let plain=[];
+    const itemPattern=/^(\s*)(\d+[.)]|[-*+])\s+(.+)$/;
 
-    for(const rawLine of lines){
-      const line = rawLine.trim();
-      if(!line) continue;
-
-      const numbered = line.match(/^\d+\.\s+(.+)$/);
-      const bullet = line.match(/^[-*]\s+(.+)$/);
-
-      if(numbered){
-        required.push(numbered[1].trim());
-      }else if(bullet){
-        required.push(bullet[1].trim());
-      }else{
-        noteLines.push(line);
+    function flushPlain(){
+      if(plain.length){
+        html.push(markdownBlockToHtml(plain.join("\n")));
+        plain=[];
+      }
+    }
+    function parseList(items,start,indent){
+      const first=items[start];
+      const kind=/^\d/.test(first.marker)?"ol":"ul";
+      let out=`<${kind} class="assignment-list">`;
+      let index=start;
+      while(index<items.length){
+        const item=items[index];
+        if(item.indent!==indent || (/^\d/.test(item.marker)?"ol":"ul")!==kind)break;
+        out+=`<li>${inlineMarkdown(item.text)}`;
+        index++;
+        // A nested block belongs to the preceding list item.
+        while(index<items.length && items[index].indent>indent){
+          const nested=parseList(items,index,items[index].indent);
+          out+=nested.html;
+          index=nested.next;
+        }
+        out+="</li>";
+      }
+      return {html:out+`</${kind}>`,next:index};
+    }
+    function flushList(items){
+      let index=0;
+      while(index<items.length){
+        const chunk=parseList(items,index,items[index].indent);
+        html.push(chunk.html);
+        index=chunk.next;
       }
     }
 
-    return {
-      required,
-      optional:[],
-      fileNote:noteLines.join(" ").trim()
-    };
+    for(let i=0;i<lines.length;i++){
+      const line=lines[i];
+      const match=line.match(itemPattern);
+      if(!match){plain.push(line);continue;}
+      flushPlain();
+      const items=[];
+      // The whole adjacent list is parsed together, preserving its indentation.
+      while(i<lines.length){
+        const current=lines[i].match(itemPattern);
+        if(!current)break;
+        items.push({indent:current[1].replace(/\t/g,"    ").length,
+                    marker:current[2],text:current[3]});
+        i++;
+      }
+      flushList(items);
+      i--;
+    }
+    flushPlain();
+    return {html:html.join("\n")};
   }
 
   function lessonFromMarkdown(markdown, fallbackLesson){
